@@ -29,8 +29,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cellery-io/cellery-hub/components/docker-auth/pkg/extension"
-
 	"github.com/dgrijalva/jwt-go"
 )
 
@@ -92,26 +90,26 @@ func validateToken(inToken string, cert []byte, execId string) (bool, error) {
 	return false, err
 }
 
-func Authenticate(uName string, token string, execId string) int {
+func Authenticate(uName string, token string, execId string) bool {
 	log.Printf("[%s] Authentication logic handler reached and token will be validated\n", execId)
 	if isJWT(execId) {
 		log.Printf("[%s] Performing authentication by using JWT\n", execId)
 		jwtValidity := validateJWT(token, uName, execId)
 		if jwtValidity {
 			log.Printf("[%s] User successfully authenticated. Returning success status code\n", execId)
-			return extension.SuccessExitCode
+			return true
 		} else {
 			log.Printf("[%s] User failed to authenticate. Returning error status code\n", execId)
-			return extension.ErrorExitCode
+			return false
 		}
 	} else {
 		log.Printf("[%s] Performing authentication by using access token\n", execId)
 		if validateAccessToken(token, uName, execId) {
 			log.Printf("[%s] User successfully authenticated. Returning success status code\n", execId)
-			return extension.SuccessExitCode
+			return true
 		} else {
 			log.Printf("[%s] User failed to authenticate. Returning error status code\n", execId)
-			return extension.ErrorExitCode
+			return false
 		}
 	}
 }
@@ -198,6 +196,7 @@ func validateAccessToken(token string, providedUsername string, execId string) b
 		return false
 	}
 	req.SetBasicAuth(username, password)
+	fmt.Println("Username", username, "Password", password)
 	// todo Remove the the host verification turning off
 	tr := &http.Transport{
 		TLSClientConfig: &tls.Config{
@@ -266,7 +265,7 @@ func resolveIntrospectionUrl(execId string) (string, bool) {
 
 // resolveCredentials resolves the user credentials of the user that is used to communicate to introspection endpoint
 func resolveCredentials(execId string) (string, string, bool) {
-	username := os.Getenv("USERNAME")
+	username := os.Getenv("USE")
 	if len(username) == 0 {
 		log.Printf("[%s] Error: USERNAME environment variable is empty\n", execId)
 		return "", "", true

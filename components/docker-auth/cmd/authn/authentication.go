@@ -19,98 +19,69 @@
 package main
 
 import (
+	"fmt"
 	"log"
-	"net/http"
 	"os"
 	"strconv"
 	"strings"
 
+	"github.com/cellery-io/cellery-hub/components/docker-auth/pkg/auth"
 	"github.com/cellery-io/cellery-hub/components/docker-auth/pkg/extension"
+	"github.com/cesanta/docker_auth/auth_server/api"
+	"go.uber.org/zap"
 )
 
-const (
-	logFile = "/extension-logs/authn-ext.log"
-)
+type PluginAuthn struct {
+	cfg *api.Authenticator
+}
 
-func main() {
-	err := os.MkdirAll("/extension-logs", os.ModePerm)
-	file, err := os.OpenFile(logFile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
-	defer func() {
-		err = file.Close()
-		if err != nil {
-			log.Printf("Error while closing the file : %s\n", err)
-			os.Exit(extension.MisuseExitCode)
-		}
-	}()
-	if err != nil {
-		log.Println("Error creating the file :", err)
-		os.Exit(extension.ErrorExitCode)
-	}
-	log.SetOutput(file)
+func (c *PluginAuthn) Authenticate(user string, password api.PasswordString) (bool, api.Labels, error) {
+	fmt.Println(user, string(password))
+	return doAuthentication(user, string(password))
+}
 
+func (c *PluginAuthn) Stop() {
+}
+
+func (c *PluginAuthn) Name() string {
+	return "plugin auth"
+}
+
+var Authn PluginAuthn
+
+func doAuthentication(user, incomingToken string) (bool, api.Labels, error) {
+	logger := zap.NewExample().Sugar()
+	slogger := logger.Named("authentication")
 	execId, err := extension.GetExecID()
 	if err != nil {
-		log.Printf("Error in generating the execId : %s\n", err)
-		os.Exit(extension.ErrorExitCode)
+		return false, nil, fmt.Errorf("error in generating the execId : %s", err)
 	}
 
-	text := extension.ReadStdIn()
-	log.Printf("[%s] Payload received from CLI : %s\n", execId, text)
-	credentials := strings.Split(text, " ")
+	slogger.Debugf("[%s] Username (%s) and password received from CLI", execId, user)
 
-	if len(credentials) != 2 {
-		log.Printf("[%s] Cannot parse the Input from the Auth service", execId)
-		os.Exit(extension.ErrorExitCode)
-	}
-	uName := credentials[0]
-	incomingToken := credentials[1]
 	tokenArray := strings.Split(incomingToken, ":")
 	token := tokenArray[0]
 
 	isPing := len(tokenArray) > 1 && tokenArray[1] == "ping"
 	if isPing {
-		log.Printf("[%s] Ping request recieved\n", execId)
+		slogger.Debugf("[%s] Ping request received", execId)
 	}
 
-	url := resolveAuthenticationUrl(execId)
-	if url == "" {
-		log.Printf("[%s] Authentication end point not found. Exiting with error exit code", execId)
-		os.Exit(extension.ErrorExitCode)
-	}
-	payload := strings.NewReader("{\"uName\":\"" + uName + "\",\"token\":\"" + token + "\"}")
+	auth.Authenticate(user, token, execId)
 
-	log.Printf("[%s] Calling %s", execId, url)
-	req, _ := http.NewRequest("POST", url, payload)
-	req.Header.Add(extension.ExecIdHeaderName, execId)
-	res, _ := http.DefaultClient.Do(req)
-
-	defer func() {
-		err := res.Body.Close()
-		if err != nil {
-			log.Printf("[%s] Error occured while closing the response received from auth server "+
-				" : %v\n", execId, err)
-		}
-	}()
-
-	log.Printf("[%s] Response received from the auth server with the status code %d", execId, res.StatusCode)
-
-	if res.StatusCode == http.StatusUnauthorized {
-		log.Printf("[%s] User access token failed to authenticate. Evaluating ping", execId)
+	if !auth.Authenticate(user, token, execId) {
+		slogger.Debugf("[%s] User access token failed to authenticate. Evaluating ping", execId)
 		if isPing {
-			log.Printf("[%s] Since this is a ping request, exiting with auth fail status without passing to "+
-				" authorization filter\n", execId)
-			os.Exit(extension.ErrorExitCode)
+			return false, nil, fmt.Errorf("since this is a ping request, exiting with auth fail status " +
+				"without passing to authorization filter")
 		} else {
-			log.Printf("[%s] Failed authentication. But passing to authorization filter", execId)
-			addAuthenticationLabel(false, execId)
-			os.Exit(extension.SuccessExitCode)
+			slogger.Debugf("[%s] Failed authentication. But passing to authorization filter", execId)
+			return true, addAuthenticationLabel(false, execId), nil
 		}
-	}
-	if res.StatusCode == http.StatusOK {
-		log.Printf("[%s] User successfully authenticated by validating token. Exiting with success exit code",
-			execId)
-		addAuthenticationLabel(true, execId)
-		os.Exit(extension.SuccessExitCode)
+	} else {
+		slogger.Debugf("[%s] User successfully authenticated by validating token. Exiting with success "+
+			"exit code", execId)
+		return true, addAuthenticationLabel(true, execId), nil
 	}
 }
 
@@ -129,13 +100,11 @@ func resolveAuthenticationUrl(execId string) string {
 	return authServer + authenticationEP
 }
 
-func addAuthenticationLabel(isAuthenticated bool, execId string) {
+func addAuthenticationLabel(isAuthenticated bool, execId string) api.Labels {
 	authResultString := strconv.FormatBool(isAuthenticated)
-	label := "{\"labels\": {\"isAuthSuccess\": [\"" + authResultString + "\"]}}"
-	log.Printf("[%s] Adding labels to authorization ext from authn ext: %s\n", execId, label)
-	_, err := os.Stdout.WriteString(label)
-	if err != nil {
-		log.Printf("[%s] Error in writing to standard output. Hence failing authentication. No authorizatino done", err)
-		os.Exit(extension.ErrorExitCode)
-	}
+	label := make([]string, 1)
+	label[0] = authResultString
+	authLabels := api.Labels{}
+	authLabels["isAuthSuccess"] = label
+	return authLabels
 }

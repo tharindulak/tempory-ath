@@ -20,72 +20,55 @@ package extension
 
 import (
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/cesanta/docker_auth/auth_server/api"
 	"log"
-	"net"
 	"strings"
 
 	_ "github.com/go-sql-driver/mysql"
 )
 
-type Labelstest map[string][]string
+func ValidateAccess(db *sql.DB, actions [] string, username string, repository string, labels api.Labels,
+	execId string) (bool, error) {
 
-type AuthRequestInfo struct {
-	Account string
-	Type    string
-	Name    string
-	Service string
-	IP      net.IP
-	Actions []string
-	Labels  Labelstest
-}
-
-func ValidateAccess(db *sql.DB, accessToken string, execId string) (bool, error) {
-	var authReqInfo AuthRequestInfo
-	err := json.Unmarshal([]byte(accessToken), &authReqInfo)
-	if err != nil {
-		log.Printf("[%s] Unable to unmarshal the json :%s\n", execId, err)
-		return false, err
-	}
-	log.Printf("[%s] Required actions for the username are :%s\n", execId, authReqInfo.Actions)
-	log.Printf("[%s] Received labels are :%s\n", execId, authReqInfo.Labels)
+	log.Printf("[%s] Required actions for the username are :%s", execId, actions)
+	log.Printf("[%s] Received labels are :%s", execId, labels)
 
 	isPullOnly := false
-	if len(authReqInfo.Actions) == 1 && authReqInfo.Actions[0] == pullAction {
-		log.Printf("[%s] Received a request for pull only action\n", execId)
+	if len(actions) == 1 && actions[0] == pullAction {
+		log.Printf("[%s] Received a request for pull only action", execId)
 		isPullOnly = true
 	}
 
-	log.Printf("[%s] Label map length : %d\n", execId, len(authReqInfo.Labels))
-	if len(authReqInfo.Labels) < 1 {
-		log.Printf("[%s] Not received any label\n", execId)
+	log.Printf("[%s] Label map length : %d", execId, len(labels))
+	if len(labels) < 1 {
+		log.Printf("[%s] Not received any label", execId)
 		return false, nil
 	}
 
-	if authReqInfo.Labels["isAuthSuccess"][0] == "true" {
-		log.Printf("[%s] Validating access for authenticated user\n", execId)
+	if labels["isAuthSuccess"][0] == "true" {
+		log.Printf("[%s] Validating access for authenticated user", execId)
 	} else {
 		if isPullOnly {
-			log.Printf("[%s] Validating access for unauthenticated user for pull action\n", execId)
+			log.Printf("[%s] Validating access for unauthenticated user for pull action", execId)
 		} else {
-			log.Printf("[%s] Denying access for unauthenticated user for push action\n", execId)
+			log.Printf("[%s] Denying access for unauthenticated user for push action", execId)
 			return false, nil
 		}
 	}
 
-	organization, image, err := getOrganizationAndImage(authReqInfo.Name, execId)
+	organization, image, err := getOrganizationAndImage(repository, execId)
 	if err != nil {
 		return false, err
 	}
 	log.Printf("[%s] Image name is declared as :%s\n", execId, image)
 	if isPullOnly {
 		log.Printf("[%s] Received a pulling task\n", execId)
-		return isAuthorizedToPull(db, authReqInfo.Account, organization, image, execId)
+		return isAuthorizedToPull(db, username, organization, image, execId)
 	} else {
 		log.Printf("[%s] Received a pushing task\n", execId)
-		return isAuthorizedToPush(db, authReqInfo.Account, organization, execId)
+		return isAuthorizedToPush(db, username, organization, execId)
 	}
 }
 

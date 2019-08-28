@@ -19,74 +19,57 @@
 package main
 
 import (
+	"fmt"
+	"github.com/cellery-io/cellery-hub/components/docker-auth/pkg/auth"
+	"github.com/cellery-io/cellery-hub/components/docker-auth/pkg/db"
+	"github.com/cesanta/docker_auth/auth_server/api"
+	"go.uber.org/zap"
 	"log"
-	"net/http"
 	"os"
-	"strings"
 
 	"github.com/cellery-io/cellery-hub/components/docker-auth/pkg/extension"
 )
 
-const (
-	logFile = "/extension-logs/authz-ext.log"
-)
+type PluginAuthz struct {
+	Authz api.Authorizer
+}
 
-func main() {
-	err := os.MkdirAll("/extension-logs", os.ModePerm)
-	file, err := os.OpenFile(logFile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
-	defer func() {
-		err = file.Close()
-		if err != nil {
-			log.Printf("Error while closing the file : %s\n", err)
-			os.Exit(2)
-		}
-	}()
-	if err != nil {
-		log.Println("Error creating the file :", err)
-		os.Exit(1)
-	}
-	log.SetOutput(file)
+func (c *PluginAuthz) Stop() {
+}
 
+func (c *PluginAuthz) Name() string {
+	return "plugin authz"
+}
+
+func (c *PluginAuthz) Authorize(ai *api.AuthRequestInfo) ([]string, error) {
+	fmt.Printf("Received auth request info: %v", ai)
+	return doAuthorize(ai)
+}
+
+var Authz PluginAuthz
+
+func doAuthorize(ai *api.AuthRequestInfo) ([]string, error) {
+	logger := zap.NewExample().Sugar()
+	slogger := logger.Named("authorization")
 	execId, err := extension.GetExecID()
 	if err != nil {
-		log.Printf("Error in generating the execId : %s\n", err)
-		os.Exit(extension.ErrorExitCode)
+		return nil, fmt.Errorf("error in generating the execId : %s", err)
 	}
-
-	accessToken := extension.ReadStdIn()
-	log.Printf("[%s] Access token received\n", execId)
-
-	url := resolveAuthorizationUrl(execId)
-	if url == "" {
-		log.Printf("[%s] Authorization end point not found. Exiting with error exit code", execId)
-		os.Exit(extension.ErrorExitCode)
+	slogger.Debugf("Authorization logic reached. User will be authorized")
+	dbConnectionPool, err := db.GetDbConnectionPool()
+	if err != nil {
+		return nil, fmt.Errorf("error while establishing database connection pool")
 	}
-
-	payload := strings.NewReader(accessToken)
-	log.Printf("[%s] Calling %s with accessToken : %s as payload", execId, url, accessToken)
-
-	req, _ := http.NewRequest("POST", url, payload)
-	req.Header.Add(extension.ExecIdHeaderName, execId)
-
-	res, _ := http.DefaultClient.Do(req)
-
-	defer func() {
-		err := res.Body.Close()
-		if err != nil {
-			log.Printf("[%s] Error occured while closing the response received from auth server "+
-				" : %v\n", execId, err)
-		}
-	}()
-
-	log.Printf("[%s] Response received from the auth server with the status code : %d", execId, res.StatusCode)
-
-	if res.StatusCode == http.StatusUnauthorized {
-		log.Printf("[%s] Unauthorized request. Exiting with error exit code", execId)
-		os.Exit(extension.ErrorExitCode)
+	authorized, err := auth.Authorization(dbConnectionPool, ai, execId)
+	if err != nil {
+		return nil, fmt.Errorf("error while executing authorization logic")
 	}
-	if res.StatusCode == http.StatusOK {
-		log.Printf("[%s] Authorized request. Exiting with success exit code", execId)
-		os.Exit(extension.SuccessExitCode)
+	if !authorized {
+		slogger.Debugf("[%s] User : %s is unauthorized for %s actions", execId, ai.Account, ai.Actions)
+		return nil, nil
+	} else {
+		slogger.Debugf("[%s] User : %s is authorized for %s actions", execId, ai.Account, ai.Actions)
+		return ai.Actions, nil
 	}
 }
 

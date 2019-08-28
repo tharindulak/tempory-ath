@@ -9,8 +9,8 @@ token:
   certificate: "/security/docker-auth-sign.crt"
   key: "/security/docker-auth-sign.key"
 
-ext_auth:
-  command: "/extensions/authentication"
+plugin_authn:
+  plugin_path: "/extensions/authn.so"
 
-ext_authz:
-  command: "/extensions/authorization"
+plugin_authz:
+  plugin_path: "/extensions/authz.so"
